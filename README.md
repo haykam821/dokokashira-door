@@ -1,6 +1,6 @@
 # Dokokashira Door
 
-"Enhances" vanilla doors for Modfest 1.17.
+"Enhances" vanilla doors. Originally for Modfest 1.17, updated to 1.21 by @haykam821
 
 ## Ok but what does it actually do
 
