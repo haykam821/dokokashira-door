@@ -36,8 +36,5 @@
 		"fabric-tag-extensions-v0": "*",
     "minecraft": "1.17.x",
     "java": ">=16"
-  },
-  "suggests": {
-    "that-you-switch-to-quilt-as-soon-as-its-available": "*"
   }
 }
