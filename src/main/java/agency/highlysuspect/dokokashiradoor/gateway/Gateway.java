@@ -1,25 +1,26 @@
 package agency.highlysuspect.dokokashiradoor.gateway;
 
 import agency.highlysuspect.dokokashiradoor.Init;
+import agency.highlysuspect.dokokashiradoor.util.CodecCrap;
 import agency.highlysuspect.dokokashiradoor.util.DoorUtil;
-import com.google.common.base.Preconditions;
 import com.mojang.serialization.Codec;
-import com.mojang.serialization.DataResult;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.DoorBlock;
 import net.minecraft.block.enums.DoorHinge;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.network.RegistryByteBuf;
+import net.minecraft.network.codec.PacketCodec;
+import net.minecraft.network.codec.PacketCodecs;
+import net.minecraft.registry.Registries;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.sound.SoundCategory;
-import net.minecraft.sound.SoundEvents;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.registry.Registry;
 import net.minecraft.world.World;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -29,42 +30,20 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 public record Gateway(BlockPos doorTopPos, DoorBlock doorBlock, List<Block> frame, Direction facing) implements Comparable<Gateway> {
-	//For serialization
-	public record Proto(BlockPos doorTopPos, Identifier doorBlockId, List<Identifier> frameIds, Direction facing) {
-		public static final Codec<Proto> CODEC = RecordCodecBuilder.create(i -> i.group(
-			BlockPos.CODEC.fieldOf("pos").forGetter(Proto::doorTopPos),
-			Identifier.CODEC.fieldOf("doorBlock").forGetter(Proto::doorBlockId),
-			Identifier.CODEC.listOf().fieldOf("frame").forGetter(Proto::frameIds),
-			Direction.CODEC.fieldOf("facing").forGetter(Proto::facing)
-		).apply(i, Proto::new));
-		
-		public static Proto lift(Gateway gateway) {
-			Preconditions.checkNotNull(gateway);
-			
-			return new Proto(
-				gateway.doorTopPos,
-				Registry.BLOCK.getId(gateway.doorBlock),
-				gateway.frame.stream().map(Registry.BLOCK::getId).collect(Collectors.toList()),
-				gateway.facing
-			);
-		}
-		
-		public DataResult<Gateway> validateAndDrop() {
-			if(!Registry.BLOCK.containsId(doorBlockId)) return DataResult.error("No such block " + doorBlockId);
-			if(!(Registry.BLOCK.get(doorBlockId) instanceof DoorBlock doorBlock)) return DataResult.error("Block " + doorBlockId + " is not instanceof DoorBlock");
-			
-			if(frameIds.size() != 7) return DataResult.error("Expected 7 frame blocks, found " + frameIds.size());
-			List<Block> frameBlocks = new ArrayList<>();
-			for(Identifier id : frameIds) {
-				if(!Registry.BLOCK.containsId(id)) return DataResult.error("No such block " + id + " in frame");
-				frameBlocks.add(Registry.BLOCK.get(id));
-			}
-			
-			return DataResult.success(new Gateway(doorTopPos, doorBlock, frameBlocks, facing));
-		}
-	}
+	public static final Codec<Gateway> CODEC = RecordCodecBuilder.create(i -> i.group(
+		BlockPos.CODEC.fieldOf("pos").forGetter(Gateway::doorTopPos),
+		DoorUtil.DOOR_CODEC.fieldOf("doorBlock").forGetter(Gateway::doorBlock),
+		Registries.BLOCK.getCodec().listOf(7, 7).fieldOf("frame").forGetter(Gateway::frame),
+		Direction.CODEC.fieldOf("facing").forGetter(Gateway::facing)
+	).apply(i, Gateway::new));
 	
-	public static final Codec<Gateway> CODEC = Proto.CODEC.comapFlatMap(Proto::validateAndDrop, Proto::lift);
+	public static final PacketCodec<RegistryByteBuf, Gateway> PACKET_CODEC = PacketCodec.tuple(
+		BlockPos.PACKET_CODEC, Gateway::doorTopPos,
+		DoorUtil.DOOR_PACKET_CODEC, Gateway::doorBlock,
+		CodecCrap.validateMinLength(PacketCodecs.registryValue(RegistryKeys.BLOCK).collect(PacketCodecs.toList(7)), 7), Gateway::frame,
+		Direction.PACKET_CODEC, Gateway::facing,
+		Gateway::new
+	);
 	
 	public boolean equalButDifferentPositions(Gateway other) {
 		return (!doorTopPos.equals(other.doorTopPos)) &&
@@ -88,7 +67,7 @@ public record Gateway(BlockPos doorTopPos, DoorBlock doorBlock, List<Block> fram
 		BlockState doorTopState = world.getBlockState(doorTopPos);
 		Block maybeDoorBlock = doorTopState.getBlock();
 		if(!(maybeDoorBlock instanceof DoorBlock doorBlock)) return null;
-		if(!Init.OPAQUE_DOORS.contains(doorBlock)) return null;
+		if(!doorTopState.isIn(Init.OPAQUE_DOORS)) return null;
 		
 		//"facing" -> the direction the player faces, when they place a door
 		//The *opposite* of facing, is the block edge that the door rests on.
@@ -189,8 +168,8 @@ public record Gateway(BlockPos doorTopPos, DoorBlock doorBlock, List<Block> fram
 			//On the server, to *other players*, play the door opening sound from both doors.
 			if(world instanceof ServerWorld sworld) {
 				//playSound with a PlayerEntity argument skips that player
-				sworld.playSound(player, departureGateway.doorTopPos, SoundEvents.BLOCK_WOODEN_DOOR_OPEN, SoundCategory.BLOCKS, 1f, world.random.nextFloat() * 0.1f + 0.9f);
-				sworld.playSound(player,             this.doorTopPos, SoundEvents.BLOCK_WOODEN_DOOR_OPEN, SoundCategory.BLOCKS, 1f, world.random.nextFloat() * 0.1f + 0.9f);
+				sworld.playSound(player, departureGateway.doorTopPos, DoorUtil.getOpenSound(departureDoorState), SoundCategory.BLOCKS, 1f, world.random.nextFloat() * 0.1f + 0.9f);
+				sworld.playSound(player,             this.doorTopPos, DoorUtil.getOpenSound(arrivalDoorState), SoundCategory.BLOCKS, 1f, world.random.nextFloat() * 0.1f + 0.9f);
 			}
 		}
 	}
@@ -208,11 +187,11 @@ public record Gateway(BlockPos doorTopPos, DoorBlock doorBlock, List<Block> fram
 		int checksum = doorTopPos.hashCode();
 		checksum *= 31;
 		
-		checksum ^= Registry.BLOCK.getRawId(doorBlock);
+		checksum ^= Registries.BLOCK.getRawId(doorBlock);
 		checksum *= 31;
 		
 		for(Block f : frame) {
-			checksum ^= Registry.BLOCK.getRawId(f);
+			checksum ^= Registries.BLOCK.getRawId(f);
 			checksum *= 31;
 		}
 		
